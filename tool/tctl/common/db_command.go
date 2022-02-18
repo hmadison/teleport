@@ -37,6 +37,9 @@ type DBCommand struct {
 	// format is the output format (text, json or yaml).
 	format string
 
+	// verbose sets whether full table output should be shown for labels
+	verbose bool
+
 	// dbList implements the "tctl db ls" subcommand.
 	dbList *kingpin.CmdClause
 }
@@ -48,6 +51,7 @@ func (c *DBCommand) Initialize(app *kingpin.Application, config *service.Config)
 	db := app.Command("db", "Operate on databases registered with the cluster.")
 	c.dbList = db.Command("ls", "List all databases registered with the cluster.")
 	c.dbList.Flag("format", "Output format, 'text', 'json', or 'yaml'").Default("text").StringVar(&c.format)
+	c.dbList.Flag("verbose", "Verbose table output, shows full label output").Short('v').BoolVar(&c.verbose)
 }
 
 // TryRun attempts to run subcommands like "db ls".
@@ -71,7 +75,7 @@ func (c *DBCommand) ListDatabases(client auth.ClientI) error {
 	coll := &databaseServerCollection{servers: servers}
 	switch c.format {
 	case teleport.Text:
-		err = coll.writeText(os.Stdout)
+		err = coll.writeText(c.verbose, os.Stdout)
 	case teleport.JSON:
 		err = coll.writeJSON(os.Stdout)
 	case teleport.YAML:

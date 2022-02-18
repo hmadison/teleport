@@ -37,6 +37,9 @@ type AppsCommand struct {
 	// format is the output format (text, json, or yaml)
 	format string
 
+	// verbose sets whether full table output should be shown for labels
+	verbose bool
+
 	// appsList implements the "tctl apps ls" subcommand.
 	appsList *kingpin.CmdClause
 }
@@ -48,6 +51,7 @@ func (c *AppsCommand) Initialize(app *kingpin.Application, config *service.Confi
 	apps := app.Command("apps", "Operate on applications registered with the cluster.")
 	c.appsList = apps.Command("ls", "List all applications registered with the cluster.")
 	c.appsList.Flag("format", "Output format, 'text', 'json', or 'yaml'").Default("text").StringVar(&c.format)
+	c.appsList.Flag("verbose", "Verbose table output, shows full label output").Short('v').BoolVar(&c.verbose)
 }
 
 // TryRun attempts to run subcommands like "apps ls".
@@ -72,7 +76,7 @@ func (c *AppsCommand) ListApps(client auth.ClientI) error {
 
 	switch c.format {
 	case teleport.Text:
-		err = coll.writeText(os.Stdout)
+		err = coll.writeText(c.verbose, os.Stdout)
 	case teleport.JSON:
 		err = coll.writeJSON(os.Stdout)
 	case teleport.YAML:
