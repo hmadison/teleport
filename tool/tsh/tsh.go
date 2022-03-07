@@ -274,6 +274,8 @@ type CLIConf struct {
 	AWSRole string
 	// AWSCommandArgs contains arguments that will be forwarded to AWS CLI binary.
 	AWSCommandArgs []string
+	// TODO
+	AWSForwardProxy bool
 
 	// Reason is the reason for starting an ssh or kube session.
 	Reason string
@@ -415,6 +417,7 @@ func Run(args []string, opts ...cliOption) error {
 	aws := app.Command("aws", "Access AWS API.")
 	aws.Arg("command", "AWS command and subcommands arguments that are going to be forwarded to AWS CLI").StringsVar(&cf.AWSCommandArgs)
 	aws.Flag("app", "Optional Name of the AWS application to use if logged into multiple.").StringVar(&cf.AppName)
+	aws.Flag("forward-proxy", "Use local AWS proxy as a forward proxy that is compatible with HTTPS_PROXY.").Hidden().BoolVar(&cf.AWSForwardProxy)
 
 	// Applications.
 	apps := app.Command("apps", "View and control proxied applications.").Alias("app")

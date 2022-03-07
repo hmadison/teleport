@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"os"
+	"sync"
 
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/gravitational/trace"
@@ -33,6 +34,7 @@ import (
 	"golang.org/x/crypto/ssh/agent"
 
 	"github.com/gravitational/teleport/lib/client"
+	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/srv/alpnproxy/common"
 	"github.com/gravitational/teleport/lib/utils"
 	"github.com/gravitational/teleport/lib/utils/aws"
@@ -307,6 +309,35 @@ func (l *LocalProxy) Close() error {
 
 // StartAWSAccessProxy starts the local AWS CLI proxy.
 func (l *LocalProxy) StartAWSAccessProxy(ctx context.Context) error {
+	err := http.Serve(l.cfg.Listener, http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		if req.Method == "CONNECT" {
+			l.handleForwardProxy(rw, req)
+			return
+		}
+
+		l.handleAWSRequest(rw, req)
+	}))
+	if err != nil && !utils.IsUseOfClosedNetworkError(err) {
+		return trace.Wrap(err)
+	}
+	return nil
+}
+
+// handleAWSRequest is a HTTP handler that reverse-proxies an AWS request.
+func (l *LocalProxy) handleAWSRequest(rw http.ResponseWriter, req *http.Request) {
+	if err := aws.VerifyAWSSignature(req, l.cfg.AWSCredentials); err != nil {
+		log.WithError(err).Errorf("AWS signature verification failed.")
+		rw.WriteHeader(http.StatusForbidden)
+		return
+	}
+
+	if addr, err := utils.ParseAddr(req.Host); err == nil {
+		if addr.Host() != "localhost" && addr.Host() != defaults.Localhost {
+			log.Debugf("Setting X-Forwarded-Host to %v", req.Host)
+			req.Header.Set("X-Forwarded-Host", req.Host)
+		}
+	}
+
 	tr := &http.Transport{
 		TLSClientConfig: &tls.Config{
 			NextProtos:         []string{string(l.cfg.Protocol)},
@@ -322,16 +353,85 @@ func (l *LocalProxy) StartAWSAccessProxy(ctx context.Context) error {
 		},
 		Transport: tr,
 	}
-	err := http.Serve(l.cfg.Listener, http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
-		if err := aws.VerifyAWSSignature(req, l.cfg.AWSCredentials); err != nil {
-			log.WithError(err).Errorf("AWS signature verification failed.")
-			rw.WriteHeader(http.StatusForbidden)
-			return
-		}
-		proxy.ServeHTTP(rw, req)
-	}))
-	if err != nil && !utils.IsUseOfClosedNetworkError(err) {
-		return trace.Wrap(err)
+
+	proxy.ServeHTTP(rw, req)
+}
+
+// handleForwardProxy handles connect tunnel requests from clients.
+//
+// ┌──────┐1.CONNECT┌─────┐         ┌────────┐
+// │      ├────────►│local├────────►│teleport│
+// │client│         │     │3.reverse│        │
+// │      │   ┌─────┤proxy│  proxy  │ proxy  │
+// └──────┘   │     └─────┘         └────────┘
+//            │        ▲
+//            └────────┘
+//            2.forward
+//              proxy
+//
+//
+//
+// Step by step:
+// 1a. Client sends a HTTP request (e.g. GET https://s3.us-east-1.amazonaws.com)
+//     with HTTPS_PROXY=https://localhost:<local-proxy-port>.
+// 1b. Local proxy recevies a CONNECT request with the original hostname. First
+//     it prepares a HTTPS certificate for it. Then local proxy creates a 2nd
+//     connection to itself for tunneling. Lastly, the local proxy sends a back
+//     a 200 to the client to let it know that it can start sending data.
+// 2a. Client sends the normal HTTP request through the 1st connection.
+// 2b. Local proxy forwards all data received from the 1st connection to the
+//     2nd connection.
+// 2c. Local proxy serves the GET request from the 2nd connection using the
+//     newly generated certficate
+// 3a. Local proxy adds the hostname to "X-Forwarded-Host" header then revere
+//     proxies the request to Teleport server.
+
+func (l *LocalProxy) handleForwardProxy(rw http.ResponseWriter, req *http.Request) {
+	// Hijack client connection.
+	hijacker, ok := rw.(http.Hijacker)
+	if !ok {
+		log.Warn("Failed to hijack client connection from HTTP request.")
+		rw.WriteHeader(http.StatusInternalServerError)
+		return
 	}
-	return nil
+
+	clientConn, _, _ := hijacker.Hijack()
+	if clientConn == nil {
+		log.Warn("Failed to hijack client connection from HTTP request.")
+		rw.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	defer clientConn.Close()
+
+	// Create a server connection back to our local proxy.
+	serverConn, err := net.Dial("tcp", l.cfg.Listener.Addr().String())
+	if err != nil {
+		log.WithError(err).Warn("Failed to establish connection to local proxy.")
+		rw.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	defer serverConn.Close()
+
+	// Let client know we are ready for proxying.
+	clientConn.Write([]byte(fmt.Sprintf("%v 200 OK\r\n\r\n", req.Proto)))
+
+	// Stream everything from client to local proxy.
+	log.Debugf("Started forward proxying for %v", req.Host)
+	defer log.Debugf("Finished forward proxying for %v", req.Host)
+
+	wg := &sync.WaitGroup{}
+	wg.Add(2)
+	stream := func(reader, writer net.Conn) {
+		_, _ = io.Copy(reader, writer)
+		if readerConn, ok := reader.(*net.TCPConn); ok {
+			log.Debugf("--- STeve close reader %v", readerConn.CloseRead())
+		}
+		if writerConn, ok := writer.(*net.TCPConn); ok {
+			log.Debugf("--- STeve close writer %v", writerConn.CloseWrite())
+		}
+		wg.Done()
+	}
+	go stream(clientConn, serverConn)
+	go stream(serverConn, clientConn)
+	wg.Wait()
 }

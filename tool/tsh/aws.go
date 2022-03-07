@@ -18,9 +18,12 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -35,6 +38,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/gravitational/trace"
 
+	"github.com/gravitational/teleport/api/constants"
 	"github.com/gravitational/teleport/lib/asciitable"
 	"github.com/gravitational/teleport/lib/client"
 	"github.com/gravitational/teleport/lib/defaults"
@@ -79,7 +83,7 @@ func onAWS(cf *CLIConf) error {
 		return trace.Wrap(err)
 	}
 
-	lp, err := createLocalAWSCLIProxy(cf, tc, generatedAWSCred, tmpCert.getCert())
+	lp, err := createLocalAWSCLIProxy(cf, tc, generatedAWSCred, tmpCert)
 	if err != nil {
 		return trace.Wrap(err)
 	}
@@ -100,12 +104,17 @@ func onAWS(cf *CLIConf) error {
 		Scheme: "https",
 	}
 
-	endpointFlag := fmt.Sprintf("--endpoint-url=%s", url.String())
-	bundleFlag := fmt.Sprintf("--ca-bundle=%s", tmpCert.getCAPath())
-
 	args := append([]string{}, cf.AWSCommandArgs...)
-	args = append(args, endpointFlag)
-	args = append(args, bundleFlag)
+	args = append(args, fmt.Sprintf("--ca-bundle=%s", tmpCert.getCAPath()))
+
+	if cf.AWSForwardProxy {
+		if err := os.Setenv("HTTPS_PROXY", url.String()); err != nil {
+			return trace.Wrap(err)
+		}
+	} else {
+		args = append(args, fmt.Sprintf("--endpoint-url=%s", url.String()))
+	}
+
 	cmd := exec.Command(awsCLIBinaryName, args...)
 
 	cmd.Stdout = os.Stdout
@@ -128,7 +137,7 @@ func genAndSetAWSCredentials() (*credentials.Credentials, error) {
 	return credentials.NewStaticCredentials(id, secret, ""), nil
 }
 
-func createLocalAWSCLIProxy(cf *CLIConf, tc *client.TeleportClient, cred *credentials.Credentials, localCerts tls.Certificate) (*alpnproxy.LocalProxy, error) {
+func createLocalAWSCLIProxy(cf *CLIConf, tc *client.TeleportClient, cred *credentials.Credentials, tmpCert *tempSelfSignedLocalCert) (*alpnproxy.LocalProxy, error) {
 	awsApp, err := pickActiveAWSApp(cf)
 	if err != nil {
 		return nil, trace.Wrap(err)
@@ -144,9 +153,7 @@ func createLocalAWSCLIProxy(cf *CLIConf, tc *client.TeleportClient, cred *creden
 		return nil, trace.Wrap(err)
 	}
 	listener, err := tls.Listen("tcp", "localhost:0", &tls.Config{
-		Certificates: []tls.Certificate{
-			localCerts,
-		},
+		GetCertificate: tmpCert.getCertificate,
 	})
 	if err != nil {
 		return nil, trace.Wrap(err)
@@ -224,6 +231,7 @@ func setFakeAWSEnvCredentials(accessKeyID, secretKey string) error {
 
 func getARNFromFlags(cf *CLIConf, profile *client.ProfileStatus) (string, error) {
 	if cf.AWSRole == "" {
+		printArrayAs(profile.AWSRolesARNs, "Available Role ARNs")
 		return "", trace.BadParameter("--aws-role flag is required")
 	}
 	for _, v := range profile.AWSRolesARNs {
@@ -304,6 +312,62 @@ func newTempSelfSignedLocalCert() (*tempSelfSignedLocalCert, error) {
 		cert:   cert,
 		caFile: f,
 	}, nil
+}
+
+func (t *tempSelfSignedLocalCert) getCertificate(client *tls.ClientHelloInfo) (*tls.Certificate, error) {
+	if client.ServerName == "localhost" {
+		return &t.cert, nil
+	}
+
+	log.Debugf("Generating a self-signed certificate for %v", client.ServerName)
+	ca, err := x509.ParseCertificate(t.cert.Certificate[0])
+	if err != nil {
+		log.Warn(err)
+		return nil, trace.Wrap(err)
+	}
+
+	subject := ca.Subject
+	subject.CommonName = client.ServerName
+
+	cert := &x509.Certificate{
+		SerialNumber: ca.SerialNumber,
+		Subject:      subject,
+		NotBefore:    ca.NotBefore,
+		NotAfter:     ca.NotAfter,
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		DNSNames:     []string{client.ServerName},
+	}
+
+	certPrivKey, err := rsa.GenerateKey(rand.Reader, constants.RSAKeySize)
+	if err != nil {
+		log.Warn(err)
+		return nil, trace.Wrap(err)
+	}
+
+	certBytes, err := x509.CreateCertificate(rand.Reader, cert, ca, &certPrivKey.PublicKey, t.cert.PrivateKey)
+	if err != nil {
+		log.Warn(err)
+		return nil, trace.Wrap(err)
+	}
+
+	certPEM := new(bytes.Buffer)
+	pem.Encode(certPEM, &pem.Block{
+		Type:  "CERTIFICATE",
+		Bytes: certBytes,
+	})
+
+	certPrivKeyPEM := new(bytes.Buffer)
+	pem.Encode(certPrivKeyPEM, &pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: x509.MarshalPKCS1PrivateKey(certPrivKey),
+	})
+
+	serverCert, err := tls.X509KeyPair(certPEM.Bytes(), certPrivKeyPEM.Bytes())
+	if err != nil {
+		log.Warn(err)
+		return nil, trace.Wrap(err)
+	}
+	return &serverCert, nil
 }
 
 func (t *tempSelfSignedLocalCert) getCAPath() string {
