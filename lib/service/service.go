@@ -1785,7 +1785,7 @@ func (process *TeleportProcess) newLocalCacheForWindowsDesktop(clt auth.ClientI,
 // newLocalCache returns new instance of access point
 func (process *TeleportProcess) newLocalCache(clt auth.ClientI, setupConfig cache.SetupConfigFn, cacheName []string) (*cache.Cache, error) {
 	return process.newAccessCache(accessCacheConfig{
-		inMemory:  process.Config.CachePolicy.Type == memory.GetName(),
+		inMemory:  process.Config.CachePolicy.Type != lite.GetName(),
 		services:  clt,
 		setup:     setupConfig,
 		cacheName: cacheName,
