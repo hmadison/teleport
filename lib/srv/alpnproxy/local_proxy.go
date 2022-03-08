@@ -34,7 +34,6 @@ import (
 	"golang.org/x/crypto/ssh/agent"
 
 	"github.com/gravitational/teleport/lib/client"
-	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/srv/alpnproxy/common"
 	"github.com/gravitational/teleport/lib/tlsca"
 	"github.com/gravitational/teleport/lib/utils"
@@ -332,13 +331,6 @@ func (l *LocalProxy) handleAWSRequest(rw http.ResponseWriter, req *http.Request)
 		return
 	}
 
-	if addr, err := utils.ParseAddr(req.Host); err == nil {
-		if addr.Host() != "localhost" && addr.Host() != defaults.Localhost {
-			log.Debugf("Setting X-Forwarded-Host to %v", req.Host)
-			req.Header.Set("X-Forwarded-Host", req.Host)
-		}
-	}
-
 	tr := &http.Transport{
 		TLSClientConfig: &tls.Config{
 			NextProtos:         []string{string(l.cfg.Protocol)},
@@ -347,6 +339,7 @@ func (l *LocalProxy) handleAWSRequest(rw http.ResponseWriter, req *http.Request)
 			Certificates:       l.cfg.Certs,
 		},
 	}
+
 	proxy := &httputil.ReverseProxy{
 		Director: func(outReq *http.Request) {
 			outReq.URL.Scheme = "https"
@@ -355,6 +348,7 @@ func (l *LocalProxy) handleAWSRequest(rw http.ResponseWriter, req *http.Request)
 		Transport: tr,
 	}
 
+	// Note that ReverseProxy automatically adds "X-Forwarded-Host" header.
 	proxy.ServeHTTP(rw, req)
 }
 
@@ -389,10 +383,10 @@ func (l *LocalProxy) handleAWSRequest(rw http.ResponseWriter, req *http.Request)
 // 3b. The response traverses through the 2nd connection then to the 1st
 //     connection back to the client.
 //
-// Ideally the 2nd-conneciton-to-itself is not required if we can decrypt the
+// Ideally the 2nd-connection-to-itself is not required if we can decrypt the
 // client connection directly. However, many "net/http" functionalities are
 // private (e.g. http.conn.serve) for handling a raw connection so it is much
-// easier to foward back to itself.
+// easier to forward back to itself.
 func (l *LocalProxy) handleForwardProxy(rw http.ResponseWriter, req *http.Request) {
 	// Hijack client connection.
 	hijacker, ok := rw.(http.Hijacker)
