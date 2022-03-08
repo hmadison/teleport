@@ -72,22 +72,18 @@ func (c *AppsCommand) ListApps(client auth.ClientI) error {
 	if err != nil {
 		return trace.Wrap(err)
 	}
-	coll := &appServerCollection{servers: servers}
+	coll := &appServerCollection{servers: servers, verbose: c.verbose}
 
 	switch c.format {
 	case teleport.Text:
-		err = coll.writeText(c.verbose, os.Stdout)
+		return trace.Wrap(coll.writeText(os.Stdout))
 	case teleport.JSON:
-		err = coll.writeJSON(os.Stdout)
+		return trace.Wrap(coll.writeJSON(os.Stdout))
 	case teleport.YAML:
-		err = coll.writeYAML(os.Stdout)
+		return trace.Wrap(coll.writeYAML(os.Stdout))
 	default:
 		return trace.BadParameter("unknown format %q", c.format)
 	}
-	if err != nil {
-		return trace.Wrap(err)
-	}
-	return nil
 }
 
 var appMessageTemplate = template.Must(template.New("app").Parse(`The invite token: {{.token}}.

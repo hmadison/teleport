@@ -204,10 +204,10 @@ func (c *NodeCommand) ListActive(client auth.ClientI) error {
 	if err != nil {
 		return trace.Wrap(err)
 	}
-	coll := &serverCollection{servers: nodes}
+	coll := &serverCollection{servers: nodes, verbose: c.verbose}
 	switch c.lsFormat {
 	case "text":
-		if err := coll.writeText(c.verbose, os.Stdout); err != nil {
+		if err := coll.writeText(os.Stdout); err != nil {
 			return trace.Wrap(err)
 		}
 	case "yaml":
