@@ -192,6 +192,15 @@ func resolveEndpoint(r *http.Request) (*endpoints.ResolvedEndpoint, error) {
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
+
+	if host := r.Header.Get("X-Forwarded-Host"); host != "" {
+		return &endpoints.ResolvedEndpoint{
+			URL:           "https://" + host, // All AWS service endpoints are https.
+			SigningRegion: awsAuthHeader.Region,
+			SigningName:   awsAuthHeader.Service,
+		}
+	}
+
 	resolvedEndpoint, err := endpoints.DefaultResolver().EndpointFor(awsAuthHeader.Service, awsAuthHeader.Region)
 	if err != nil {
 		return nil, trace.Wrap(err)

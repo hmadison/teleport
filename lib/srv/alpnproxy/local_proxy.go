@@ -36,6 +36,7 @@ import (
 	"github.com/gravitational/teleport/lib/client"
 	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/srv/alpnproxy/common"
+	"github.com/gravitational/teleport/lib/tlsca"
 	"github.com/gravitational/teleport/lib/utils"
 	"github.com/gravitational/teleport/lib/utils/aws"
 )
@@ -357,7 +358,7 @@ func (l *LocalProxy) handleAWSRequest(rw http.ResponseWriter, req *http.Request)
 	proxy.ServeHTTP(rw, req)
 }
 
-// handleForwardProxy handles connect tunnel requests from clients.
+// handleForwardProxy handles CONNECT tunnel requests from clients.
 //
 // ┌──────┐1.CONNECT┌─────┐         ┌────────┐
 // │      ├────────►│local├────────►│teleport│
@@ -369,23 +370,29 @@ func (l *LocalProxy) handleAWSRequest(rw http.ResponseWriter, req *http.Request)
 //            2.forward
 //              proxy
 //
-//
-//
-// Step by step:
-// 1a. Client sends a HTTP request (e.g. GET https://s3.us-east-1.amazonaws.com)
+// The forward proxy process goes like this:
+// 1a. Client sends a request (e.g. GET https://s3.us-east-1.amazonaws.com)
 //     with HTTPS_PROXY=https://localhost:<local-proxy-port>.
-// 1b. Local proxy recevies a CONNECT request with the original hostname. First
-//     it prepares a HTTPS certificate for it. Then local proxy creates a 2nd
-//     connection to itself for tunneling. Lastly, the local proxy sends a back
-//     a 200 to the client to let it know that it can start sending data.
-// 2a. Client sends the normal HTTP request through the 1st connection.
+// 1b. Local proxy first recevies a CONNECT request from the client connection.
+//     It then prepares a TLS certificate for the requested hostname. Then, the
+//     local proxy creates a 2nd connection to itself for tunneling the data.
+//     Once ready, the local proxy sends back a 200 to the client to let it
+//     know that it can start sending data.
+// 2a. Client sends the normal HTTPS request through the 1st connection.
 // 2b. Local proxy forwards all data received from the 1st connection to the
 //     2nd connection.
-// 2c. Local proxy serves the GET request from the 2nd connection using the
-//     newly generated certficate
-// 3a. Local proxy adds the hostname to "X-Forwarded-Host" header then revere
-//     proxies the request to Teleport server.
-
+// 2c. Local proxy serves the HTTPS request from the 2nd connection using the
+//     newly generated certficate.
+// 3a. Local proxy adds the hostname (e.g. s3.us-east-1.amazonaws.com) to
+//     "X-Forwarded-Host" header then revere proxies the request to the
+//     Teleport server.
+// 3b. The response traverses through the 2nd connection then to the 1st
+//     connection back to the client.
+//
+// Ideally the 2nd-conneciton-to-itself is not required if we can decrypt the
+// client connection directly. However, many "net/http" functionalities are
+// private (e.g. http.conn.serve) for handling a raw connection so it is much
+// easier to foward back to itself.
 func (l *LocalProxy) handleForwardProxy(rw http.ResponseWriter, req *http.Request) {
 	// Hijack client connection.
 	hijacker, ok := rw.(http.Hijacker)
@@ -412,6 +419,11 @@ func (l *LocalProxy) handleForwardProxy(rw http.ResponseWriter, req *http.Reques
 	}
 	defer serverConn.Close()
 
+	// Generate a certificate for the requested host.
+	if listener, ok := l.cfg.Listener.(*HTTPSForwardProxyListener); ok {
+		listener.AddHost(req.Host)
+	}
+
 	// Let client know we are ready for proxying.
 	clientConn.Write([]byte(fmt.Sprintf("%v 200 OK\r\n\r\n", req.Proto)))
 
@@ -424,14 +436,81 @@ func (l *LocalProxy) handleForwardProxy(rw http.ResponseWriter, req *http.Reques
 	stream := func(reader, writer net.Conn) {
 		_, _ = io.Copy(reader, writer)
 		if readerConn, ok := reader.(*net.TCPConn); ok {
-			log.Debugf("--- STeve close reader %v", readerConn.CloseRead())
+			readerConn.CloseRead()
 		}
 		if writerConn, ok := writer.(*net.TCPConn); ok {
-			log.Debugf("--- STeve close writer %v", writerConn.CloseWrite())
+			writerConn.CloseWrite()
 		}
 		wg.Done()
 	}
 	go stream(clientConn, serverConn)
 	go stream(serverConn, clientConn)
 	wg.Wait()
+}
+
+// HTTPSForwardProxyListener is a TLS listener that can generate certificates
+// using provided CA then serve forwarded HTTPS requests, when clients using
+// HTTPS_PROXY.
+type HTTPSForwardProxyListener struct {
+	net.Listener
+
+	ca                 tls.Certificate
+	mu                 sync.RWMutex
+	certificatesByHost map[string]*tls.Certificate
+}
+
+// NewHTTPSFowardProxyListener creates a new HTTPSForwardProxyListener.
+func NewHTTPSFowardProxyListener(listenAddr string, ca tls.Certificate) (l *HTTPSForwardProxyListener, err error) {
+	l = &HTTPSForwardProxyListener{
+		ca:                 ca,
+		certificatesByHost: make(map[string]*tls.Certificate),
+	}
+
+	tlsConfig := &tls.Config{
+		GetCertificate: l.GetCertificate,
+	}
+
+	if l.Listener, err = tls.Listen("tcp", listenAddr, tlsConfig); err != nil {
+		return nil, trace.Wrap(err)
+	}
+	return l, nil
+}
+
+// GetCertificate return TLS certificate based on SNI. Implements
+// GetCertificate of tls.Config.
+func (l *HTTPSForwardProxyListener) GetCertificate(clientHello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+
+	if cert, found := l.certificatesByHost[clientHello.ServerName]; found {
+		return cert, nil
+	}
+
+	return &l.ca, nil
+}
+
+// AddHost generates a new certificate for the specified host.
+func (l *HTTPSForwardProxyListener) AddHost(host string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	// Remove port.
+	addr, err := utils.ParseAddr(host)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	host = addr.Host()
+
+	if _, found := l.certificatesByHost[host]; found {
+		return nil
+	}
+
+	cert, err := tlsca.GenerateAndSignCertificateForDomain(host, l.ca)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+
+	log.Debugf("Self-signed certificate generated for %v", host)
+	l.certificatesByHost[host] = cert
+	return nil
 }

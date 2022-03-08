@@ -18,12 +18,9 @@ package main
 
 import (
 	"bytes"
-	"crypto/rand"
-	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/pem"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -38,7 +35,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/gravitational/trace"
 
-	"github.com/gravitational/teleport/api/constants"
 	"github.com/gravitational/teleport/lib/asciitable"
 	"github.com/gravitational/teleport/lib/client"
 	"github.com/gravitational/teleport/lib/defaults"
@@ -83,7 +79,7 @@ func onAWS(cf *CLIConf) error {
 		return trace.Wrap(err)
 	}
 
-	lp, err := createLocalAWSCLIProxy(cf, tc, generatedAWSCred, tmpCert)
+	lp, err := createLocalAWSCLIProxy(cf, tc, generatedAWSCred, tmpCert.getCert())
 	if err != nil {
 		return trace.Wrap(err)
 	}
@@ -107,12 +103,17 @@ func onAWS(cf *CLIConf) error {
 	args := append([]string{}, cf.AWSCommandArgs...)
 	args = append(args, fmt.Sprintf("--ca-bundle=%s", tmpCert.getCAPath()))
 
-	if cf.AWSForwardProxy {
-		if err := os.Setenv("HTTPS_PROXY", url.String()); err != nil {
+	switch cf.AWSCLIMode {
+	case awsCLIModeEndpointURL:
+		args = append(args, fmt.Sprintf("--endpoint-url=%s", url.String()))
+
+	case awsCLIModeHTTPSProxy:
+		if err := os.Setenv("https_proxy", url.String()); err != nil {
 			return trace.Wrap(err)
 		}
-	} else {
-		args = append(args, fmt.Sprintf("--endpoint-url=%s", url.String()))
+
+	default:
+		return trace.BadParameter("invalid mode: %s", cf.AWSCLIMode)
 	}
 
 	cmd := exec.Command(awsCLIBinaryName, args...)
@@ -137,7 +138,7 @@ func genAndSetAWSCredentials() (*credentials.Credentials, error) {
 	return credentials.NewStaticCredentials(id, secret, ""), nil
 }
 
-func createLocalAWSCLIProxy(cf *CLIConf, tc *client.TeleportClient, cred *credentials.Credentials, tmpCert *tempSelfSignedLocalCert) (*alpnproxy.LocalProxy, error) {
+func createLocalAWSCLIProxy(cf *CLIConf, tc *client.TeleportClient, cred *credentials.Credentials, caCert tls.Certificate) (*alpnproxy.LocalProxy, error) {
 	awsApp, err := pickActiveAWSApp(cf)
 	if err != nil {
 		return nil, trace.Wrap(err)
@@ -152,9 +153,13 @@ func createLocalAWSCLIProxy(cf *CLIConf, tc *client.TeleportClient, cred *creden
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
-	listener, err := tls.Listen("tcp", "localhost:0", &tls.Config{
-		GetCertificate: tmpCert.getCertificate,
-	})
+
+	listenAddr := "localhost:0"
+	if cf.LocalProxyPort != "" {
+		listenAddr = fmt.Sprintf("localhost:%s", cf.LocalProxyPort)
+	}
+
+	listener, err := alpnproxy.NewHTTPSFowardProxyListener(listenAddr, caCert)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
@@ -314,62 +319,6 @@ func newTempSelfSignedLocalCert() (*tempSelfSignedLocalCert, error) {
 	}, nil
 }
 
-func (t *tempSelfSignedLocalCert) getCertificate(client *tls.ClientHelloInfo) (*tls.Certificate, error) {
-	if client.ServerName == "localhost" {
-		return &t.cert, nil
-	}
-
-	log.Debugf("Generating a self-signed certificate for %v", client.ServerName)
-	ca, err := x509.ParseCertificate(t.cert.Certificate[0])
-	if err != nil {
-		log.Warn(err)
-		return nil, trace.Wrap(err)
-	}
-
-	subject := ca.Subject
-	subject.CommonName = client.ServerName
-
-	cert := &x509.Certificate{
-		SerialNumber: ca.SerialNumber,
-		Subject:      subject,
-		NotBefore:    ca.NotBefore,
-		NotAfter:     ca.NotAfter,
-		KeyUsage:     x509.KeyUsageDigitalSignature,
-		DNSNames:     []string{client.ServerName},
-	}
-
-	certPrivKey, err := rsa.GenerateKey(rand.Reader, constants.RSAKeySize)
-	if err != nil {
-		log.Warn(err)
-		return nil, trace.Wrap(err)
-	}
-
-	certBytes, err := x509.CreateCertificate(rand.Reader, cert, ca, &certPrivKey.PublicKey, t.cert.PrivateKey)
-	if err != nil {
-		log.Warn(err)
-		return nil, trace.Wrap(err)
-	}
-
-	certPEM := new(bytes.Buffer)
-	pem.Encode(certPEM, &pem.Block{
-		Type:  "CERTIFICATE",
-		Bytes: certBytes,
-	})
-
-	certPrivKeyPEM := new(bytes.Buffer)
-	pem.Encode(certPrivKeyPEM, &pem.Block{
-		Type:  "RSA PRIVATE KEY",
-		Bytes: x509.MarshalPKCS1PrivateKey(certPrivKey),
-	})
-
-	serverCert, err := tls.X509KeyPair(certPEM.Bytes(), certPrivKeyPEM.Bytes())
-	if err != nil {
-		log.Warn(err)
-		return nil, trace.Wrap(err)
-	}
-	return &serverCert, nil
-}
-
 func (t *tempSelfSignedLocalCert) getCAPath() string {
 	return t.caFile.Name()
 }
@@ -444,3 +393,11 @@ func getAWSAppsName(apps []tlsca.RouteToApp) []string {
 	}
 	return out
 }
+
+const (
+	// AWSCLIModeEndpointURL is mode where --endpoint-url is passed to AWS
+	// CLI to forward the request to the local proxy.
+	awsCLIModeEndpointURL = "endpoint-url"
+
+	awsCLIModeHTTPSProxy = "https_proxy"
+)
