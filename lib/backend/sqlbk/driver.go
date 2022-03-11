@@ -144,7 +144,7 @@ type Tx interface {
 	// LeaseExists returns true if a lease exists for key that has not expired.
 	LeaseExists(key []byte) bool
 
-	// UpsertLease creates or updates a backend item.
+	// UpdateLease creates or updates a backend item.
 	UpdateLease(item backend.Item)
 
 	// UpsertLease for backend item. The transaction is set to a NotFound error
