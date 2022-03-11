@@ -43,8 +43,8 @@ func GetName() string {
 }
 
 // New returns a Backend that speaks the PostgreSQL protocol when communicating
-// with the database. A non-nil error means the connection pool is ready and the
-// database has been migrated to the most recent version.
+// with the database. The connection pool is ready and the database has been
+// migrated to the most recent version upon return without an error.
 func New(ctx context.Context, params backend.Params) (*sqlbk.Backend, error) {
 	var cfg *Config
 	err := utils.ObjectToStruct(params, &cfg)

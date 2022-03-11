@@ -32,7 +32,7 @@ const (
 	// DefaultDatabase is default name of the backend database.
 	DefaultDatabase = "teleport"
 
-	// DefaultRetryPeriod  is the default delay before a transaction will retry on
+	// DefaultRetryDelayPeriod  is the default delay before a transaction will retry on
 	// serialization failure.
 	DefaultRetryDelayPeriod = 250 * time.Millisecond
 

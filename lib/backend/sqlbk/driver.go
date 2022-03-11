@@ -147,7 +147,7 @@ type Tx interface {
 	// UpsertLease creates or updates a backend item.
 	UpdateLease(item backend.Item)
 
-	// UpdateLease for backend item. The transaction is set to a NotFound error
+	// UpsertLease for backend item. The transaction is set to a NotFound error
 	// state if the backend item does not exist.
 	UpsertLease(item backend.Item)
 }

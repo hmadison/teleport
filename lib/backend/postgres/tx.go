@@ -169,7 +169,6 @@ func (tx *pgTx) DeleteLeaseRange(startKey, endKey []byte) []backend.Item {
 	if tx.rollback(err) {
 		return nil
 	}
-	defer rows.Close()
 
 	var items []backend.Item
 	for rows.Next() {
@@ -212,7 +211,6 @@ func (tx *pgTx) GetEvents(fromEventID int64, limit int) (lastEventID int64, even
 	if tx.rollback(err) {
 		return fromEventID, nil
 	}
-	defer rows.Close()
 
 	for rows.Next() {
 		var event backend.Event
@@ -241,7 +239,6 @@ func (tx *pgTx) GetExpiredLeases() []backend.Lease {
 	if tx.rollback(err) {
 		return nil
 	}
-	defer rows.Close()
 
 	var leases []backend.Lease
 	for rows.Next() {
@@ -303,7 +300,6 @@ func (tx *pgTx) GetItemRange(startKey, endKey []byte, limit int) []backend.Item 
 	if tx.rollback(err) {
 		return nil
 	}
-	defer rows.Close()
 
 	var items []backend.Item
 	for rows.Next() {
