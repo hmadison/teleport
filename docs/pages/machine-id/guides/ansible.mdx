@@ -25,10 +25,10 @@ to create a bot user and start Machine ID.
 
 If you followed the above guide, you are interested in the
 `--destination-dir=/opt/machine-id` flag, which defines the directory where
-SSH certificates and OpenSSH configuration used by Ansible will be written to.
+SSH certificates and OpenSSH configuration used by Ansible will be written.
 
-In particular, you will be using `/opt/machine-id/ssh_config` in Ansible
-configuration to define how Ansible should connect to Teleport nodes.
+In particular, you will be using `/opt/machine-id/ssh_config` in your Ansible
+configuration to define how Ansible should connect to Teleport Nodes.
 
 <Admonition type="tip">
 You can edit matching patterns used in `ssh.cfg` if something
@@ -57,7 +57,7 @@ scp_if_ssh = True
 ssh_args = -F /opt/machine-id/ssh_config
 ```
 
-You can create an inventory file `hosts` manually or use a script like below to
+You can create an inventory file `hosts` manually or use a script like the one below to
 generate it from your environment. Note, `example.com` here is the name of your
 Teleport cluster.
 
@@ -102,7 +102,7 @@ all Ansible commands in the audit log.
 
 ## Troubleshooting
 
-In case if Ansible can not connect, you may see error like this one:
+In case if Ansible cannot connect, you may see error like this one:
 
 ```txt
 example.host | UNREACHABLE! => {
