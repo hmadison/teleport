@@ -1,6 +1,6 @@
 ---
 title: Jenkins
-description: Using Teleport with Jenkins
+description: Using Teleport Machine ID with Jenkins
 ---
 
 Jenkins is a open source automation server that is frequently used to build
@@ -8,6 +8,18 @@ Continuous Integration and Continuous Delivery (CI/CD) pipelines.
 
 In this guide, we will demonstrate how to migrate Jenkins workloads to
 Machine ID with minimal changes to your pipelines.
+
+## Prerequisites
+
+You will need the following tools to use Teleport with Jenkins.
+
+- [Teleport Enterprise](../../enterprise/introduction.mdx) or [Teleport Cloud](../../cloud/introduction.mdx) >= 9.0.0 
+- `ssh` OpenSSH tool
+- `Jenkins`
+
+In addition, if you already have not done so, follow the
+[Machine ID Getting Started Guide](../../docs/pages/machine-id/getting-started.mdx)
+to create a bot user and start Machine ID.
 
 ## Architecture
 
@@ -37,19 +49,7 @@ you detect malicious behavior.
   ![Jenkins Deployments](../../img/machine-id/jenkins.png)
 </Figure>
 
-## Prerequisites
-
-You will need the following tools to use Teleport with Jenkins.
-
-- [Teleport Enterprise](../../enterprise/introduction.mdx) or [Teleport Cloud](../../cloud/introduction.mdx) >= 9.0.0 
-- `ssh` OpenSSH tool
-- `Jenkins`
-
-In addition, if you already have not done so, follow the
-[Machine ID Getting Started Guide](../../docs/pages/machine-id/getting-started.mdx)
-to create a bot user and start Machine ID.
-
-## Step 1/2 Start Machine ID
+## Step 1/2 Configure and start Machine ID
 
 Machine ID allows you to use Linux ACLs to control access to certificates on
 disk. You will use this to limit the access Jenkins has to the short-lived
@@ -60,32 +60,49 @@ Machine ID as the Linux user `teleport` and Jenkins as the Linux user
 `jenkins`. Create and initialize the directories you will need using the
 `tbot init` command.
 
-<Details scope={["cloud"]} scopeOnly={true}>
 ```code
 $ tbot init \
     --destination-dir=/opt/machine-id \
     --bot-user=teleport \
     --owner=teleport:teleport \
     --reader-user=jenkins \
-    --auth-server=example.teleport.sh:443
+```
+
+Next, create a configuration file for Machine ID at `/etc/tbot.yaml`.
+
+<Details scope={["cloud"]} scopeOnly={true}>
+```yaml
+auth_server: "example.teleport.sh:443"
+onboarding:
+  join_method: "token"
+  token: "00000000000000000000000000000000"
+  ca_pins:
+  - "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+storage:
+  directory: /var/lib/teleport/bot
+destinations:
+  - directory: /opt/machine-id
 ```
 </Details>
 <Details scope={["oss","enterprise"]} scopeOnly={true}>
-```code
-$ tbot init \
-    --destination-dir=/opt/machine-id \
-    --bot-user=teleport \
-    --owner=teleport:teleport \
-    --reader-user=jenkins \
-    --auth-server=auth.example.com:3025
+```yaml
+auth_server: "auth.example.com:3025"
+onboarding:
+  join_method: "token"
+  token: "00000000000000000000000000000000"
+  ca_pins:
+  - "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+storage:
+  directory: /var/lib/teleport/bot
+destinations:
+  - directory: /opt/machine-id
 ```
 </Details>
 
 Next, create a systemd.unit file at `/etc/systemd/system/machine-id.service`.
 This will allow systemd to start and run Machine ID in the background.
 
-<Details scope={["cloud"]} scopeOnly={true}>
-```code
+```systemd
 [Unit]
 Description=Teleport Machine ID Service
 After=network.target
@@ -95,50 +112,35 @@ Type=simple
 User=teleport
 Group=teleport
 Restart=on-failure
-ExecStart=/usr/local/bin/tbot start --destination-dir=/opt/machine-id --token=00000000000000000000000000000000 --ca-pin=sha256:1111111111111111111111111111111111111111111111111111111111111111 --auth-server=example.teleport.sh:443
+ExecStart=/usr/local/bin/tbot start -c /etc/tbot.yaml
 ExecReload=/bin/kill -HUP $MAINPID
-PIDFile=/run/machineid.pid
+PIDFile=/run/machine-id.pid
 LimitNOFILE=8192
 
 [Install]
 WantedBy=multi-user.target
 ```
-</Details>
-<Details scope={["oss","enterprise"]} scopeOnly={true}>
-```code
-[Unit]
-Description=Teleport Machine ID Service
-After=network.target
-
-[Service]
-Type=simple
-User=teleport
-Group=teleport
-Restart=on-failure
-ExecStart=/usr/local/bin/tbot start --destination-dir=/opt/machine-id --token=00000000000000000000000000000000 --ca-pin=sha256:1111111111111111111111111111111111111111111111111111111111111111 --auth-server=auth.example.com:3025
-ExecReload=/bin/kill -HUP $MAINPID
-PIDFile=/run/machineid.pid
-LimitNOFILE=8192
-
-[Install]
-WantedBy=multi-user.target
-```
-</Details>
 
 Finally, to start Machine ID, run the following commands.
 
 ```code
 $ sudo systemctl daemon-reload 
-$ sudo systemctl start machineid
+$ sudo systemctl start machine-id
 $ sudo systemctl status machine-id
 ```
 
-## Step 2/2. Update Jenkins pipelines
+## Step 2/2. Update and run Jenkins pipelines
 
-Using Machine ID within a Jenkins pipeline is now a one line change. Replace any invocation of `ssh` with the following.
+Using Machine ID within a Jenkins pipeline is now a one line change. For
+example, if you want to run the `hostname` command on a remote host, add the
+following to your Jenkins pipeline.
 
 ```
 steps {
-    sh "ssh -F /opt/machine-id/ssh_config root@node-name.example.com ..."
+  sh "ssh -F /opt/machine-id/ssh_config root@node-name.example.com hostname"
 }
 ```
+
+You are all set. You have provided Jenkins with short-lived certificates
+tied to a machine identity that can be rotated, audited, and controlled with
+all the familiar Teleport access controls.
