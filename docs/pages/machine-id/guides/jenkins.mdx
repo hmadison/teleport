@@ -69,7 +69,10 @@ $ tbot init \
     --reader-user=jenkins \
 ```
 
-Next, create a configuration file for Machine ID at `/etc/tbot.yaml`.
+Next, you will use systemd to run Machine ID in the background of each
+Jenkins worker.
+
+First create a configuration file for Machine ID at `/etc/tbot.yaml`.
 
 <Details scope={["cloud"]} scopeOnly={true}>
 ```yaml
@@ -101,7 +104,6 @@ destinations:
 </Details>
 
 Next, create a systemd.unit file at `/etc/systemd/system/machine-id.service`.
-This will allow systemd to start and run Machine ID in the background.
 
 ```systemd
 [Unit]
@@ -122,7 +124,7 @@ LimitNOFILE=8192
 WantedBy=multi-user.target
 ```
 
-Finally, to start Machine ID, run the following commands.
+Finally, run the following commands to start Machine ID.
 
 ```code
 $ sudo systemctl daemon-reload 
