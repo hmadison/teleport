@@ -35,23 +35,6 @@ const (
 	// DefaultRetryDelayPeriod  is the default delay before a transaction will retry on
 	// serialization failure.
 	DefaultRetryDelayPeriod = 250 * time.Millisecond
-
-	// DefaultConnMaxIdleTime means connections are not closed due to a
-	// connection's idle time.
-	DefaultConnMaxIdleTime = 0
-
-	// DefaultConnMaxLifetime means connections are not closed due to a
-	// connection's age.
-	DefaultConnMaxLifetime = 0
-
-	// DefaultMaxIdleConns means 2 idle connections are retained in the pool (same
-	// configuration as the standard library). If MaxIdleConns <= 0, no idle
-	// connections are retained.
-	DefaultMaxIdleConns = 2
-
-	// DefaultMaxOpenConns means the maximum number of open database connections
-	// is 50.
-	DefaultMaxOpenConns = 50
 )
 
 // Config defines a configuration for the Backend.
@@ -90,22 +73,6 @@ type Config struct {
 	// RetryDelayPeriod is the frequency a transaction is retried due to
 	// serialization conflict.
 	RetryDelayPeriod time.Duration `json:"retry_period,omitempty"`
-
-	// ConnMaxIdleTime sets the maximum amount of time a connection may be idle.
-	// https://pkg.go.dev/database/sql#DB.SetConnMaxIdleTime
-	ConnMaxIdleTime time.Duration `json:"conn_max_idle_time,omitempty"`
-
-	// ConnMaxLifetime sets the maximum amount of time a connection may be reused.
-	// https://pkg.go.dev/database/sql#DB.SetConnMaxLifetime
-	ConnMaxLifetime time.Duration `json:"conn_max_lifetime,omitempty"`
-
-	// MaxIdleConns sets the maximum number of connections in the idle connection pool.
-	// https://pkg.go.dev/database/sql#DB.SetMaxIdleConns
-	MaxIdleConns int `json:"max_idle_conns,omitempty"`
-
-	// SetMaxOpenConns sets the maximum number of open connections to the database.
-	// https://pkg.go.dev/database/sql#DB.SetMaxOpenConns
-	MaxOpenConns int `json:"max_open_conns,omitempty"`
 
 	// Clock overrides the clock used by the backend.
 	Clock clockwork.Clock `json:"-"`
@@ -149,18 +116,6 @@ func (c *Config) CheckAndSetDefaults() error {
 	}
 	if c.RetryDelayPeriod == 0 {
 		c.RetryDelayPeriod = DefaultRetryDelayPeriod
-	}
-	if c.MaxOpenConns == 0 {
-		c.MaxOpenConns = DefaultMaxOpenConns
-	}
-	if c.ConnMaxIdleTime == 0 {
-		c.ConnMaxIdleTime = DefaultConnMaxIdleTime
-	}
-	if c.ConnMaxLifetime == 0 {
-		c.ConnMaxLifetime = DefaultConnMaxLifetime
-	}
-	if c.MaxIdleConns == 0 {
-		c.MaxIdleConns = DefaultMaxIdleConns
 	}
 	return nil
 }
